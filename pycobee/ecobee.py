@@ -24,6 +24,7 @@ import arrow
 import requests
 import sqlite3
 
+
 class Ecobee(requests.Session):
 
     __DEFAULT_SQLITE_DB = path.join(getcwd(), '.ecobee.db')
@@ -47,11 +48,11 @@ class Ecobee(requests.Session):
         self.url = url if url else self.__DEFAULT_ECOBEE_API_URL
         self.db = dbfile if dbfile else self.__DEFAULT_SQLITE_DB
         self.app_key = app_key
-        # self.token_data = namedtuple('TokenData', list(self.__DEFAULT_DB_COLUMNS.keys()))
 
         super().__init__()
 
-        # sqlite3 implicitly creates db file, check to see if table exists
+        # sqlite3 creates db file on connect, check to see if table exists
+        # break out all of this stuff into backend agnostic methods
         self.db_conn = sqlite3.connect(self.db)
 
         table_check = self.db_conn.execute(
@@ -62,7 +63,7 @@ class Ecobee(requests.Session):
 
         if not any(['ECOBEE' in x for x in table_check]):
             self.__initialize_sqlite_db()
-            init_token_request = self.initialize_application()
+            self.initialize_application()
 
         self.token_data = self.__load_token_from_db()
 
@@ -93,7 +94,6 @@ class Ecobee(requests.Session):
 
         return result
 
-
     def __initialize_sqlite_db(self):
         """
         Create initial sqlite db.
@@ -104,15 +104,16 @@ class Ecobee(requests.Session):
         cursor = conn.cursor()
 
         cursor.execute(
-            'create table ECOBEE (' \
-            f'{",".join([f"{k} {v}" for k,v in self.__DEFAULT_DB_COLUMNS.items()])}' \
-            ')'
+            f'''
+            create table ECOBEE (
+            '{",".join([f"{k} {v}" for k,v in self.__DEFAULT_DB_COLUMNS.items()])}'
+            )'
+            '''
         )
 
         conn.commit()
         conn.close()
 
-    # def __commit_tokens(self, *args):
     def __commit_tokens(self):
         c = self.db_conn.cursor()
         # Fake data for now
@@ -122,21 +123,10 @@ class Ecobee(requests.Session):
         breakpoint()
         c.close()
 
-    def __read_tokens(self):
-        cursor = self.db_conn.cursor()
-        cursor.execute(f'select {",".join(self.__DEFAULT_DB_COLUMNS.keys())} from ECOBEE')
-        # for thing in map(self.token_data._make, c.fetchall()):
-        #     breakpoint()
-        #     print(thing.key_id)
-        #
-        self.token_data = self.token_data._make(cursor.fetchone())
-        breakpoint()
-        cursor.close()
-
     def initialize_application(self, max_retries=5):
         result = self.get(
             urljoin(self.url, 'authorize'),
-            params = {
+            params={
                 "response_type": "ecobeePin",
                 "client_id": self.app_key,
                 "scope": "smartRead,smartWrite"
@@ -156,7 +146,7 @@ class Ecobee(requests.Session):
 
         # This needs to be tested more
         while retry_count <= max_retries:
-            token_result = self.get_token(initial_code, self.app_key)
+            token_result = self.get_token(code=initial_code, app_key=self.app_key)
             if token_result.get('error', None) == 'authorization_pending':
                 sleep(60)
                 retry_count += 1
@@ -165,20 +155,37 @@ class Ecobee(requests.Session):
 
         if retry_count == max_retries:
             # Create an actual error class for this.
-            raise(f'Authorization timed out after {max_retres} attempts.')
+            raise(f'Authorization timed out after {max_retries} attempts.')
 
         return json_result
 
-    def get_token(self, code, app_key):
+    def get_token(self, app_key, code=None, refresh_token=None):
+        """
+        Get or refresh api tokens.
+        """
+
+        if not code and not refresh_token:
+            raise ValueError('code or refresh_token must be defined.')
+
+        params = {
+            'client_id': app_key,
+            'ecobee_type': 'jwt'
+        }
+
+        if refresh_token:
+            params.update({
+                'grant_type': 'refresh_token',
+                'refresh_token': refresh_token
+            })
+        else:
+            params.update({
+                'grant_type': 'ecobeePin',
+                'code': code
+            })
+
         result = self.post(
             urljoin(self.url, 'token'),
-            params={
-                'grant_type': 'ecobeePin',
-                'code': code,
-                'client_id': app_key,
-                'ecobee_type': 'jwt'
-
-            }
+            params=params
         )
 
         return result.json()
@@ -188,5 +195,5 @@ class Ecobee(requests.Session):
         Try to ensure that all important tokens are committed.
         """
 
+        # self.backend.commit() ?
         pass
-

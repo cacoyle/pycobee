@@ -1,0 +1,4 @@
+[flake8]
+ignore = W191,E122,E302,E402
+max-line-length = 140
+exclude = env
