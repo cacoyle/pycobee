@@ -20,6 +20,8 @@ from urllib.parse import urljoin
 from os import getcwd, path
 from time import sleep
 
+from .utils import sqlite_data_factory
+
 import arrow
 import requests
 import sqlite3
@@ -66,16 +68,7 @@ class Ecobee(requests.Session):
             self.initialize_application()
 
         self.token_data = self.__load_token_from_db()
-
-        breakpoint()
-
-    def __token_data_factory(self, cursor, row):
-        """
-        """
-
-        fields = [col[0] for col in cursor.description]
-        Row = namedtuple("Row", fields)
-        return Row(*row)
+        self.__commit_tokens()
 
     def __load_token_from_db(self):
         """
@@ -84,7 +77,7 @@ class Ecobee(requests.Session):
         returns TokenData namedtuple.
         """
 
-        self.db_conn.row_factory = self.__token_data_factory
+        self.db_conn.row_factory = sqlite_data_factory
 
         cursor = self.db_conn.cursor()
         # Make table name app specific
@@ -93,6 +86,19 @@ class Ecobee(requests.Session):
         result = row.fetchone()
 
         return result
+
+    def __write_token_to_db(self):
+        """
+        write token data to backend.
+        """
+
+        pass
+
+        # cursor = self.db_conn.cursor()
+
+    # print(f'INSERT INTO ECOBOO ({",".join9}))
+
+
 
     def __initialize_sqlite_db(self):
         """
@@ -115,13 +121,20 @@ class Ecobee(requests.Session):
         conn.close()
 
     def __commit_tokens(self):
-        c = self.db_conn.cursor()
-        # Fake data for now
-        print(f'insert into ECOBEE values ({("?," * len(self.__DEFAULT_DB_COLUMNS)).rstrip(",")})')
-        c.execute(f'insert into ECOBEE values ({("?," * len(self.__DEFAULT_DB_COLUMNS)).rstrip(",")})', ('abc1024', 'pb12', 'Bearer', 1234567890, 'abc2048', 'read,write', 1234567890, 1234567890))
+        cursor = self.db_conn.cursor()
+
+        # Change this to update or key off issued as primary
+        cursor.execute(f'''
+            INSERT INTO ECOBEE (
+                {",".join(self.token_data._fields)}
+            ) VALUES (
+                {('?,' * len(self.__DEFAULT_DB_COLUMNS)).rstrip(',')}
+            )
+            ''',
+            self.token_data
+        )
         self.db_conn.commit()
         breakpoint()
-        c.close()
 
     def initialize_application(self, max_retries=5):
         result = self.get(
