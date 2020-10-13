@@ -15,10 +15,10 @@ you will have to re-register your application in the portal.
 """
 
 
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 from urllib.parse import urljoin
 from os import getcwd, path
-from time import sleep
+from time import sleep, time
 
 from .utils import sqlite_data_factory
 
@@ -65,10 +65,61 @@ class Ecobee(requests.Session):
 
         if not any(['ECOBEE' in x for x in table_check]):
             self.__initialize_sqlite_db()
-            self.initialize_application()
+            initial_token = self.initialize_application()
+            breakpoint()
+            self.__write_token_to_backend(initial_token)
 
-        self.token_data = self.__load_token_from_db()
-        self.__commit_tokens()
+        if not hasattr(self, 'token_data'):
+            self.token_data = self.__load_token_from_db()
+
+        breakpoint()
+        thermostats = self.get('/thermostat')
+
+    def check_token(self):
+        """
+        Check to see if a token has expired, and if needed refresh.
+        """
+
+        if time() >= self.token_data.expires_at:
+            new_token = self.get_token(
+                self.token_data.app_key,
+                refresh_token=self.token_data.refresh_token
+            )
+            breakpoint()
+
+            new_token['issued'] = time()
+            new_token['expires_at'] = new_token['issued'] + new_token['expires_in']
+            new_token.pop('expires_in')
+
+            merged_data = self.token_data._asdict() | new_token
+            breakpoint()
+
+            # self.token_data = self.token_data(**merged_data)
+
+
+    def request(self, method, endpoint, params=None, data=None, json=None, check_response=False, **kwargs):
+        """
+        Override default requests.Session.request method to check for token expiration.
+        """
+
+        url = urljoin(self.url, endpoint)
+
+        self.check_token()
+
+        response = super().request(
+            method,
+            url,
+            params,
+            data=data,
+            json=json,
+            **kwargs
+        )
+
+        if check_response:
+            response.raise_for_status()
+
+        return response
+
 
     def __load_token_from_db(self):
         """
@@ -85,19 +136,26 @@ class Ecobee(requests.Session):
 
         result = row.fetchone()
 
+        if not result:
+            raise Exception('Unable to load token data from backend')
+
         return result
 
-    def __write_token_to_db(self):
-        """
-        write token data to backend.
-        """
+    def __write_token_to_backend(self, token):
+        cursor = self.db_conn.cursor()
 
-        pass
-
-        # cursor = self.db_conn.cursor()
-
-    # print(f'INSERT INTO ECOBOO ({",".join9}))
-
+        # Change this to update or key off issued as primary
+        cursor.execute(f'''
+            INSERT INTO ECOBEE (
+                {",".join(token._fields)}
+            ) VALUES (
+                {('?,' * len(self.__DEFAULT_DB_COLUMNS)).rstrip(',')}
+            )
+            ''',
+            token
+        )
+        self.db_conn.commit()
+        breakpoint()
 
 
     def __initialize_sqlite_db(self):
@@ -112,32 +170,16 @@ class Ecobee(requests.Session):
         cursor.execute(
             f'''
             create table ECOBEE (
-            '{",".join([f"{k} {v}" for k,v in self.__DEFAULT_DB_COLUMNS.items()])}'
-            )'
+            {",".join([f"{k} {v}" for k,v in self.__DEFAULT_DB_COLUMNS.items()])}
+            )
             '''
         )
 
         conn.commit()
         conn.close()
 
-    def __commit_tokens(self):
-        cursor = self.db_conn.cursor()
-
-        # Change this to update or key off issued as primary
-        cursor.execute(f'''
-            INSERT INTO ECOBEE (
-                {",".join(self.token_data._fields)}
-            ) VALUES (
-                {('?,' * len(self.__DEFAULT_DB_COLUMNS)).rstrip(',')}
-            )
-            ''',
-            self.token_data
-        )
-        self.db_conn.commit()
-        breakpoint()
-
     def initialize_application(self, max_retries=5):
-        result = self.get(
+        result = requests.get(
             urljoin(self.url, 'authorize'),
             params={
                 "response_type": "ecobeePin",
@@ -170,7 +212,16 @@ class Ecobee(requests.Session):
             # Create an actual error class for this.
             raise(f'Authorization timed out after {max_retries} attempts.')
 
-        return json_result
+        token_result['app_key'] = self.app_key
+        token_result['initial_code'] = initial_code
+        token_result['pin'] = pin
+        token_result['issued'] = time()
+        token_result['expires_at'] = token_result['issued'] + token_result['expires_in']
+
+        token_data = namedtuple('TokenData', token_result)
+
+        return token_data(**token_result)
+
 
     def get_token(self, app_key, code=None, refresh_token=None):
         """
@@ -196,7 +247,8 @@ class Ecobee(requests.Session):
                 'code': code
             })
 
-        result = self.post(
+        # Use requests native method to avoid recursion
+        result = requests.post(
             urljoin(self.url, 'token'),
             params=params
         )
@@ -208,5 +260,5 @@ class Ecobee(requests.Session):
         Try to ensure that all important tokens are committed.
         """
 
-        # self.backend.commit() ?
+        # self.__commit_tokens()
         pass
